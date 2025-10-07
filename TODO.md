@@ -1,8 +1,8 @@
-- Meteorologia (simular) -> afeta demanda
-- Scooter chega a estação cheia (está a desaparecer, não é suposto acontecer). Descobrir o q fazer
-- Mais KPIs
-- Mais agentes (só temos greedy)
-- Mais estações (nodes no grafo)
-- Outra forma de realocar scooters sem ser camiões (incentivos de dinheiro aos utilizadores para deixarem a scooter noutro local)
-- Eventos aleatorios especiais (concertos, jogos, etc) que afetam a procura (para todos os nodes - mais facil de implementar; para especificos nodes - mais realista, mais dificil de implementar)
--
+- [] Meteorologia (simular) -> afeta demanda
+- [] Scooter chega a estação cheia (está a desaparecer, não é suposto acontecer). Descobrir o q fazer
+- [] Mais KPIs
+- [] Mais agentes (só temos greedy)
+- [] Mais estações (nodes no grafo)
+- [] Outra forma de realocar scooters sem ser camiões (incentivos de dinheiro aos utilizadores para deixarem a scooter noutro local)
+- [] Eventos aleatorios especiais (concertos, jogos, etc) que afetam a procura (para todos os nodes - mais facil de implementar; para especificos nodes - mais realista, mais dificil de implementar)
+- [] Custo de viagem (bateria) dependente do travel time
