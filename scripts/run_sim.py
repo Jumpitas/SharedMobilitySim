@@ -1,8 +1,13 @@
-import argparse, yaml, sys
+import argparse
+import sys
+
 import numpy as np
+import yaml
+
+from control.greedy import plan_charging_greedy, plan_greedy
 from sim.core import Sim, SimConfig
 from sim.demand import effective_lambda
-from control.greedy import plan_greedy, plan_charging_greedy
+
 
 def main(cfg_path):
     with open(cfg_path, "r", encoding="utf-8") as f:
@@ -50,7 +55,8 @@ def main(cfg_path):
             total_reloc_km += sim.logs[-1]["reloc_km"]
             # lightweight progress every simulated 6 hours
             if step % max(1, int((6*60)/simcfg.dt_min)) == 0:
-                sys.stdout.write("."); sys.stdout.flush()
+                sys.stdout.write(".")
+                sys.stdout.flush()
     except Exception as e:
         print("\nRuntime error:", repr(e), file=sys.stderr, flush=True)
         raise

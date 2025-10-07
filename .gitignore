@@ -1,0 +1,6 @@
+# Ignore Editor directories
+.vscode/
+.idea/
+
+# Ignore Python cache files
+__pycache__/
