@@ -21,8 +21,8 @@ class SimConfig:
 class Sim:
     """
     Discrete-time simulator for station-based e-scooters/e-bikes.
-    State per station i: stock x[i], average SoC s[i].
-    Trips consume SoC on departure; charging raises average SoC for plugged fraction.
+    State per station i: stock x[i], average SoC s[i], and SoC mass m[i] = x[i]*s[i].
+    Trips/relocations conserve SoC mass; charging adds mass to plugged units.
     """
 
     def __init__(self, cfg: SimConfig, rng: np.random.Generator):
@@ -41,7 +41,8 @@ class Sim:
         self.t = 0  # minutes since start
         self.x = np.minimum(cfg.capacity // 3, cfg.capacity).astype(int)  # initial stock ~1/3 full
         self.s = rng.uniform(0.5, 0.9, size=N)                             # avg SoC in [50%, 90%]
-        self._trip_queue: List[Tuple[int, int, float]] = []                # (t_arrive, dest_j, soc_use)
+        self.m = self.x.astype(float) * self.s                             # SoC "mass" (conserved across moves)
+        self._trip_queue: List[Tuple[int, int, float, float]] = []         # (t_arrive, dest_j, soc_use, s_depart)
 
         # Accumulators / logs
         self.logs: List[dict] = []
@@ -68,22 +69,33 @@ class Sim:
         lam_eff = lam_t * weather_fac
         if event_fac is not None:
             lam_eff = lam_eff * event_fac
-        A = self.rng.poisson(lam_eff)                 # arrivals per station (int), depois de fatores aplica-se o poisson
+        A = self.rng.poisson(lam_eff)                 # arrivals per station
         served = np.minimum(self.x, A)
         unmet = A - served
-        self.x -= served
 
-        # 2) Spawn trips (schedule arrivals)
+        # Average SoC at moment of departure (before decrement)
+        avg_at_depart = np.zeros_like(self.s, dtype=float)
+        mask_prior = self.x > 0
+        avg_at_depart[mask_prior] = self.m[mask_prior] / self.x[mask_prior]
+
+        # Remove departing vehicles + their SoC mass
+        if served.sum():
+            self.m -= served * avg_at_depart
+            self.x -= served
+
+        # 2) Spawn trips (schedule arrivals with s_depart carried)
         if served.sum():
             for i, k in enumerate(served):
                 if k <= 0:
                     continue
-                # NOTA, assume que P_t[i] é um valid probability vector
                 dests = self.rng.choice(N, size=int(k), p=P_t[i])
-                # draw per-trip SoC usage (tempo de viagem ainda nao importa, adicionar depois)
                 uses = self.rng.uniform(0.03, 0.08, size=int(k))
                 tij = self.cfg.travel_min[i, dests].astype(int)
-                self._trip_queue.extend((self.t + int(tt), int(j), float(u)) for tt, j, u in zip(tij, dests, uses))
+                s_dep = float(avg_at_depart[i])
+                self._trip_queue.extend(
+                    (self.t + int(tt), int(j), float(u), s_dep)
+                    for tt, j, u in zip(tij, dests, uses)
+                )
 
         # 3) Complete trips due by next tick
         t_next = self.t + self.cfg.dt_min
@@ -92,23 +104,26 @@ class Sim:
             for rec in self._trip_queue:
                 (due if rec[0] <= t_next else future).append(rec)
             self._trip_queue = future
-            for _, j, soc_use in due:
-                # add vehicle if not at capacity (se estiver em capacity perde-se a scooter); always apply SoC drop on avg
+            for _, j, soc_use, s_depart in due:
+                s_arrive = max(0.0, s_depart - soc_use)
                 if self.x[j] < self.cfg.capacity[j]:
                     self.x[j] += 1
-                self.s[j] = max(0.0, self.s[j] - soc_use)
+                    self.m[j] += s_arrive  # add SoC mass of the arriving unit
+                # else: drop arrival (no dock), mass is lost to the modeled system
 
-        # 4) Charging (operator decision)
+        # 4) Charging (operator decision) -> add mass to plugged units, then cap
         plan = self._resolve_charging_plan(charging_plan)
-        plug_frac = np.divide(plan, np.maximum(self.x, 1), where=self.x > 0, out=np.zeros_like(self.s, dtype=float))
-        soc_gain = self.cfg.charge_rate * dt_h * plug_frac
-        self.s = np.minimum(1.0, self.s + soc_gain)
+        delta_soc = self.cfg.charge_rate * dt_h  # per plugged unit in this tick
+        # Add mass for plugged vehicles
+        self.m += plan * delta_soc
+        # Cap mass so average SoC <= 1.0
+        self.m = np.minimum(self.m, self.x.astype(float) * 1.0)
 
-        # Energy & cost from charging (Mantemos medias e aproxim por razão de simplificar)
-        energy_kwh = float(np.sum(plan * self.cfg.battery_kwh * (self.cfg.charge_rate * dt_h)))
+        # Energy & cost accounting for charging
+        energy_kwh = float(np.sum(plan * self.cfg.battery_kwh * delta_soc))
         charge_cost = energy_kwh * self.cfg.energy_cost_per_kwh
 
-        # 5) Apply relocation plan (instantâneo; Adicionar maybe tempo de deslocação dos camiões)
+        # 5) Apply relocation plan (move both count and mass)
         reloc_km = 0.0
         if reloc_plan:
             for i, j, k in reloc_plan:
@@ -117,13 +132,19 @@ class Sim:
                 move = int(min(k, self.x[i], self.cfg.capacity[j] - self.x[j]))
                 if move <= 0:
                     continue
+                avg_i = 0.0 if self.x[i] == 0 else (self.m[i] / self.x[i])
+                mass_move = move * avg_i
                 self.x[i] -= move
+                self.m[i] -= mass_move
                 self.x[j] += move
+                self.m[j] += mass_move
                 reloc_km += move * self.cfg.cost_km[i, j]
 
-        # 6) Manter Capacity e SoC feasible, logs
+        # 6) Clamp, refresh averages, log
         self.x = np.clip(self.x, 0, self.cfg.capacity)
-        self.s = np.clip(self.s, 0.0, 1.0)
+        # mass cannot exceed x (avg<=1) nor be negative
+        self.m = np.clip(self.m, 0.0, self.x.astype(float))
+        self._refresh_avg_soc()
 
         self.logs.append({
             "t_min": self.t,
@@ -137,6 +158,12 @@ class Sim:
         self.t = t_next
 
     # ------------------------- helpers -------------------------
+
+    def _refresh_avg_soc(self) -> None:
+        """Recompute average SoC from mass and count."""
+        xnz = self.x > 0
+        self.s[~xnz] = 0.0
+        self.s[xnz] = self.m[xnz] / self.x[xnz]
 
     def _resolve_charging_plan(self, charging_plan: Optional[np.ndarray]) -> np.ndarray:
         """Clip to [0, chargers, x]. If None, default: plug as many as possible."""
@@ -158,7 +185,7 @@ class Sim:
         N = self.x.shape[0]
         assert lam_t.shape == (N,), f"lam_t must be shape (N,), got {lam_t.shape}"
         assert P_t.shape == (N, N), f"P_t must be shape (N,N), got {P_t.shape}"
-        # Não sou maluco: rows of P sum to ~1
+        # rows of P must sum to 1
         row_sum = P_t.sum(axis=1)
         if not np.allclose(row_sum, 1.0, atol=1e-6):
             raise ValueError("Each row of P_t must sum to 1.0")
