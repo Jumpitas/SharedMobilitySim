@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
-
+from heapq import heappop, heappush
 import numpy as np
 
 Move = Tuple[int, int, int]   # (i -> j, k units)
@@ -92,10 +92,8 @@ class Sim:
                 uses = self.rng.uniform(0.03, 0.08, size=int(k))
                 tij = self.cfg.travel_min[i, dests].astype(int)
                 s_dep = float(avg_at_depart[i])
-                self._trip_queue.extend(
-                    (self.t + int(tt), int(j), float(u), s_dep)
-                    for tt, j, u in zip(tij, dests, uses)
-                )
+                for tt, j, u in zip(tij, dests, uses):
+                    heappush(self._trip_heap, (self.t + int(tt), int(j), float(u)))
 
         # 3) Complete trips due by next tick
         t_next = self.t + self.cfg.dt_min
@@ -109,7 +107,17 @@ class Sim:
                 if self.x[j] < self.cfg.capacity[j]:
                     self.x[j] += 1
                     self.m[j] += s_arrive  # add SoC mass of the arriving unit
-                # else: drop arrival (no dock), mass is lost to the modeled system
+                else:
+                    # reroute to nearest station with free slot
+                    free = np.where(self.x < self.cfg.capacity)[0]
+                    if free.size:
+                        k = free[np.argmin(self.cfg.travel_min[j, free])]
+                        self.x[k] += 1
+                        self.m[k] += s_arrive
+                        overflow_rerouted = overflow_rerouted + 1 if 'overflow_rerouted' in locals() else 1
+                        overflow_extra_min = (overflow_extra_min + float(self.cfg.travel_min[j, k])
+                                              if 'overflow_extra_min' in locals() else float(self.cfg.travel_min[j, k]))
+
 
         # 4) Charging (operator decision) -> add mass to plugged units, then cap
         plan = self._resolve_charging_plan(charging_plan)
@@ -154,6 +162,17 @@ class Sim:
             "plugged": int(plan.sum()),
             "charge_energy_kwh": energy_kwh,
             "charge_cost_eur": charge_cost,
+            "overflow_rerouted": int(locals().get("overflow_rerouted", 0)),
+            "overflow_extra_min": float(locals().get("overflow_extra_min", 0.0)),
+            "soc_mean": float(np.mean(self.s)),
+            "full_ratio": float(np.mean(self.x == self.cfg.capacity)),
+            "empty_ratio": float(np.mean(self.x == 0)),
+            "stock_std": float(np.std(self.x)),
+            "reloc_ops": int(sum(k for *_ij, k in (reloc_plan or []))),
+            "charge_utilization": float(np.mean(np.divide(
+                self.logs[-1]["plugged"] if self.logs else 0,
+                np.sum(self.cfg.chargers), where=[np.sum(self.cfg.chargers) > 0]
+            ))) if np.sum(self.cfg.chargers) > 0 else 0.0,
         })
         self.t = t_next
 

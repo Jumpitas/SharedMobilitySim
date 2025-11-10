@@ -1,6 +1,6 @@
 time:
   dt_minutes: 5
-  horizon_hours: 48
+  horizon_hours: 168
 network:
   n_stations: 10
   capacity_default: 12

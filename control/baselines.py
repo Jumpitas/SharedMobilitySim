@@ -33,3 +33,12 @@ def plan_charging_greedy(x, s, chargers, lam_t):
     for i in order:
         plan[i] = int(min(chargers[i], x[i]))
     return plan
+
+def plan_nightly_uniform(x, C, target=0.6):
+    # move from >target*C to <target*C once per night (call from main when hour==2)
+    return []
+
+def plan_predictive_placeholder(x, C, travel_min, forecast_lam, low=0.2, high=0.8):
+    # same signature as greedy; later swap in forecast-aware logic
+    from control.greedy import plan_greedy
+    return plan_greedy(x, C, travel_min, low, high)

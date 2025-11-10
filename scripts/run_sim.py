@@ -4,7 +4,7 @@ import sys
 import numpy as np
 import yaml
 
-from control.greedy import plan_charging_greedy, plan_greedy
+from control.baselines import plan_charging_greedy, plan_greedy
 from sim.core import Sim, SimConfig
 from sim.weather_mc import make_default_weather_mc as weather_mc
 from sim.demand import effective_lambda
@@ -74,17 +74,44 @@ def main(cfg_path):
         raise
 
     unmet_total = int(sum(r["unmet"] for r in sim.logs))
-    avail_avg   = float(np.mean([r["availability"] for r in sim.logs]))
-    energy_kwh  = float(sum(r.get("charge_energy_kwh", 0.0) for r in sim.logs))
-    energy_eur  = float(sum(r.get("charge_cost_eur", 0.0) for r in sim.logs))
+    avail_avg = float(np.mean([r["availability"] for r in sim.logs]))
+    energy_kwh = float(sum(r.get("charge_energy_kwh", 0.0) for r in sim.logs))
+    energy_eur = float(sum(r.get("charge_cost_eur", 0.0) for r in sim.logs))
+    reloc_km_tot = float(sum(r.get("reloc_km", 0.0) for r in sim.logs))
+
+    overflow_rerouted_total = int(sum(r.get("overflow_rerouted", 0) for r in sim.logs))
+    overflow_dropped_total = int(sum(r.get("overflow_dropped", 0) for r in sim.logs))
+    overflow_extra_min_tot = float(sum(r.get("overflow_extra_min", 0.0) for r in sim.logs))
+
+    soc_mean_avg = float(np.mean([r.get("soc_mean", 0.0) for r in sim.logs]))
+    full_ratio_avg = float(np.mean([r.get("full_ratio", 0.0) for r in sim.logs]))
+    empty_ratio_avg = float(np.mean([r.get("empty_ratio", 0.0) for r in sim.logs]))
+    stock_std_avg = float(np.mean([r.get("stock_std", 0.0) for r in sim.logs]))
+
+    reloc_ops_total = int(sum(r.get("reloc_ops", 0) for r in sim.logs))
+    charge_util_avg = float(np.mean([r.get("charge_utilization", 0.0) for r in sim.logs]))
 
     print("\n", flush=True)
     print({
         "unmet_total": unmet_total,
         "availability_avg": round(avail_avg, 3),
-        "relocation_km_total": float(round(total_reloc_km, 2)),
+
+        "relocation_km_total": round(reloc_km_tot, 2),
+        "reloc_ops_total": reloc_ops_total,
+
         "charging_energy_kwh_total": round(energy_kwh, 2),
         "charging_cost_eur_total": round(energy_eur, 2),
+        "charge_utilization_avg": round(charge_util_avg, 3),
+
+        "overflow_rerouted_total": overflow_rerouted_total,
+        "overflow_dropped_total": overflow_dropped_total,  # 0 if not logged
+        "overflow_extra_min_total": round(overflow_extra_min_tot, 1),
+
+        "soc_mean_avg": round(soc_mean_avg, 3),
+        "full_ratio_avg": round(full_ratio_avg, 3),
+        "empty_ratio_avg": round(empty_ratio_avg, 3),
+        "stock_std_avg": round(stock_std_avg, 3),
+
         "ticks": steps, "dt_min": simcfg.dt_min, "stations": N,
     }, flush=True)
 
