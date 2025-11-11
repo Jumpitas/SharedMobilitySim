@@ -42,7 +42,7 @@ class Sim:
         self.x = np.minimum(cfg.capacity // 3, cfg.capacity).astype(int)  # initial stock ~1/3 full
         self.s = rng.uniform(0.5, 0.9, size=N)                             # avg SoC in [50%, 90%]
         self.m = self.x.astype(float) * self.s                             # SoC "mass" (conserved across moves)
-        self._trip_queue: List[Tuple[int, int, float, float]] = []         # (t_arrive, dest_j, soc_use, s_depart)
+        self._trip_heap: List[Tuple[int, int, float, float]] = []  # (t_arrive, dest_j, soc_use, s_depart)
 
         # Accumulators / logs
         self.logs: List[dict] = []
@@ -89,38 +89,44 @@ class Sim:
                 if k <= 0:
                     continue
                 dests = self.rng.choice(N, size=int(k), p=P_t[i])
-                uses = self.rng.uniform(0.03, 0.08, size=int(k))
                 tij = self.cfg.travel_min[i, dests].astype(int)
+                uses = np.clip(0.01 + 0.12 * (tij / 60.0), 0.0, 1.0)
                 s_dep = float(avg_at_depart[i])
                 for tt, j, u in zip(tij, dests, uses):
-                    heappush(self._trip_heap, (self.t + int(tt), int(j), float(u)))
+                    heappush(self._trip_heap, (self.t + int(tt), int(j), float(u), s_dep))
 
         # 3) Complete trips due by next tick
         t_next = self.t + self.cfg.dt_min
-        if self._trip_queue:
-            due, future = [], []
-            for rec in self._trip_queue:
-                (due if rec[0] <= t_next else future).append(rec)
-            self._trip_queue = future
-            for _, j, soc_use, s_depart in due:
-                s_arrive = max(0.0, s_depart - soc_use)
-                if self.x[j] < self.cfg.capacity[j]:
-                    self.x[j] += 1
-                    self.m[j] += s_arrive  # add SoC mass of the arriving unit
-                else:
-                    # reroute to nearest station with free slot
-                    free = np.where(self.x < self.cfg.capacity)[0]
-                    if free.size:
-                        k = free[np.argmin(self.cfg.travel_min[j, free])]
-                        self.x[k] += 1
-                        self.m[k] += s_arrive
-                        overflow_rerouted = overflow_rerouted + 1 if 'overflow_rerouted' in locals() else 1
-                        overflow_extra_min = (overflow_extra_min + float(self.cfg.travel_min[j, k])
-                                              if 'overflow_extra_min' in locals() else float(self.cfg.travel_min[j, k]))
+        overflow_rerouted = 0
+        overflow_dropped = 0
+        overflow_extra_min = 0.0
 
+        due = []
+        while self._trip_heap and self._trip_heap[0][0] <= t_next:
+            due.append(heappop(self._trip_heap))
+
+        for _, j, soc_use, s_depart in due:
+            s_arrive = max(0.0, s_depart - soc_use)
+            if self.x[j] < self.cfg.capacity[j]:
+                self.x[j] += 1
+                self.m[j] += s_arrive
+            else:
+                # reroute to nearest station with free slot
+                free = np.where(self.x < self.cfg.capacity)[0]
+                if free.size:
+                    k = free[np.argmin(self.cfg.travel_min[j, free])]
+                    self.x[k] += 1
+                    self.m[k] += s_arrive
+                    overflow_rerouted += 1
+                    overflow_extra_min += float(self.cfg.travel_min[j, k])
+                else:
+                    # nowhere to dock -> drop the trip
+                    overflow_dropped += 1
 
         # 4) Charging (operator decision) -> add mass to plugged units, then cap
         plan = self._resolve_charging_plan(charging_plan)
+        total_chargers = int(np.sum(self.cfg.chargers))
+        charge_utilization = (int(plan.sum()) / total_chargers) if total_chargers > 0 else 0.0
         delta_soc = self.cfg.charge_rate * dt_h  # per plugged unit in this tick
         # Add mass for plugged vehicles
         self.m += plan * delta_soc
@@ -169,10 +175,7 @@ class Sim:
             "empty_ratio": float(np.mean(self.x == 0)),
             "stock_std": float(np.std(self.x)),
             "reloc_ops": int(sum(k for *_ij, k in (reloc_plan or []))),
-            "charge_utilization": float(np.mean(np.divide(
-                self.logs[-1]["plugged"] if self.logs else 0,
-                np.sum(self.cfg.chargers), where=[np.sum(self.cfg.chargers) > 0]
-            ))) if np.sum(self.cfg.chargers) > 0 else 0.0,
+            "charge_utilization": float(charge_utilization),
         })
         self.t = t_next
 
